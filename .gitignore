@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Project artifacts
+map_out/
+scripts/_spike_out/
+*.tif
+*.tiff
+!tests/fixtures/*.tif
+
+# Local / private
+ref/
+.claude/settings.local.json
+
+# Editor
+.vscode/
+.idea/
+.DS_Store

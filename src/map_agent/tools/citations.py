@@ -1,0 +1,114 @@
+"""Citation metadata: DOI, version, and access tracking for MAP datasets.
+
+Ensures every output is reproducible and properly cited — critical for
+publications, NSPs, and Global Fund applications.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+
+from map_agent.core.config import settings
+from map_agent.core.geoserver import get_wcs_client, get_wfs_client
+
+logger = logging.getLogger(__name__)
+
+# Known DOIs for MAP datasets
+_KNOWN_DOIS: dict[str, str] = {
+    "Malaria": "10.1038/s41591-024-03297-9",
+    "Interventions": "10.1038/s41467-024-53768-3",
+    "Blood_Disorders": "10.1038/ncomms3135",
+    "Accessibility": "10.1038/s41591-020-1059-1",
+    "Vector_Occurrence": "10.7554/eLife.08347",
+    "Explorer": "10.1186/1475-2875-11-89",
+}
+
+# Standard MAP citation template
+_MAP_CITATION = (
+    "Malaria Atlas Project (MAP), University of Oxford / Telethon Kids Institute. "
+    "https://malariaatlas.org/"
+)
+
+
+def _extract_workspace(layer_id: str) -> str:
+    """Extract workspace name from a layer ID."""
+    for sep in ("__", ":"):
+        if sep in layer_id:
+            return layer_id.split(sep, 1)[0]
+    return ""
+
+
+def _extract_vintage(layer_id: str) -> str:
+    """Extract the vintage/version from a layer ID (e.g., '202508' from '202508_Global_...')."""
+    parts = layer_id.replace(":", "__").split("__")
+    for part in parts:
+        if part.isdigit() and len(part) == 6:
+            return part
+    return "unknown"
+
+
+def get_citation(layer_id: str) -> dict:
+    """Generate citation metadata for a MAP dataset.
+
+    Extracts version, DOI, and constructs a formatted citation suitable
+    for publications, reports, and funding proposals.
+
+    Args:
+        layer_id: The MAP layer ID (WCS or WFS).
+
+    Returns:
+        Dict with: dataset, version, doi, citation_text, accessed_at, url.
+    """
+    workspace = _extract_workspace(layer_id)
+    vintage = _extract_vintage(layer_id)
+    doi = _KNOWN_DOIS.get(workspace, "")
+    accessed = datetime.now(timezone.utc)
+
+    # Try to get the layer title from the geoserver
+    title = layer_id
+    try:
+        wcs = get_wcs_client()
+        if layer_id in wcs.contents:
+            cov = wcs.contents[layer_id]
+            title = getattr(cov, "title", layer_id)
+    except Exception:
+        try:
+            wfs = get_wfs_client()
+            if layer_id in wfs.contents:
+                ft = wfs.contents[layer_id]
+                title = getattr(ft, "title", layer_id)
+        except Exception:
+            pass
+
+    doi_url = f"https://doi.org/{doi}" if doi else ""
+
+    citation_text = (
+        f"{_MAP_CITATION} "
+        f"Dataset: {title} (version {vintage}). "
+        + (f"DOI: {doi_url}. " if doi_url else "")
+        + f"Accessed: {accessed.strftime('%Y-%m-%d')}."
+    )
+
+    result = {
+        "dataset": title,
+        "layer_id": layer_id,
+        "workspace": workspace,
+        "version": vintage,
+        "doi": doi,
+        "doi_url": doi_url,
+        "citation_text": citation_text,
+        "accessed_at": accessed.isoformat(),
+        "map_url": "https://malariaatlas.org/",
+        "geoserver_url": settings.geoserver_root,
+    }
+
+    # Save citation to output dir
+    settings.output_dir.mkdir(parents=True, exist_ok=True)
+    safe_id = layer_id.replace(":", "_").replace("__", "_")
+    citation_path = settings.output_dir / f"citation_{safe_id}.json"
+    citation_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    result["citation_path"] = str(citation_path.resolve())
+
+    return result
