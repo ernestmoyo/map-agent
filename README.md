@@ -14,7 +14,7 @@
   <a href="#contributing">Contributing</a>
 </p>
 
-> **Disclaimer:** This is an independent personal project, NOT an official product of the Malaria Atlas Project (MAP), University of Oxford, or Telethon Kids Institute. Data is sourced from MAP's public geoserver under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). All outputs must include the dataset citation.
+> **Disclaimer:** This is an independent personal project. Data is sourced from MAP's public geoserver under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). All outputs must include the dataset citation.
 
 ---
 
