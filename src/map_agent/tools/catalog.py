@@ -60,8 +60,11 @@ def search(query: str, data_type: str = "all") -> list[dict]:
         data_type: Filter by "raster", "vector", or "all".
 
     Returns:
-        List of matching layers as dicts, up to 30 results.
+        List of matching layers as dicts with @L refs, up to 30 results.
     """
+    from map_agent.core.analytics import log_tool_call
+    from map_agent.core.session import session
+
     layers: list[LayerInfo] = []
     if data_type in ("raster", "all"):
         layers.extend(_build_raster_index())
@@ -80,7 +83,7 @@ def search(query: str, data_type: str = "all") -> list[dict]:
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    return [
+    results = [
         {
             "layer_id": layer.layer_id,
             "workspace": layer.workspace,
@@ -90,3 +93,10 @@ def search(query: str, data_type: str = "all") -> list[dict]:
         }
         for _, layer in scored[:30]
     ]
+
+    # Assign @L refs to results
+    session.register_layers(results)
+
+    log_tool_call("catalog_search", extra={"query": query, "data_type": data_type, "result_count": len(results)})
+
+    return results

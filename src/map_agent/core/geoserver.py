@@ -21,9 +21,13 @@ def get_wcs_client() -> WebCoverageService:
 
 @lru_cache(maxsize=1)
 def get_wfs_client() -> WebFeatureService:
-    """Return a cached WFS 2.0.0 client connected to the MAP geoserver."""
+    """Return a cached WFS 1.1.0 client connected to the MAP geoserver.
+
+    WFS 1.1.0 is used because OWSLib's WFS 2.0.0 getfeature() does not
+    support the cql_filter vendor parameter needed for GeoServer queries.
+    """
     return WebFeatureService(
         settings.wfs_url,
-        version="2.0.0",
+        version="1.1.0",
         timeout=settings.request_timeout,
     )

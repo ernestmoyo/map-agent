@@ -27,6 +27,12 @@ _CMAP_INTERVENTIONS = "YlGn"
 _CMAP_DEFAULT = "viridis"
 
 
+def _is_prevalence(title: str | None, layer_id: str | None) -> bool:
+    """Check if the data is prevalence/parasite rate (for epidemiological breakpoints)."""
+    hint = (title or "").lower() + " " + (layer_id or "").lower()
+    return any(k in hint for k in ("prevalence", "parasite", "pr", "pfpr", "pvpr", "parasite_rate"))
+
+
 def _guess_colormap(title: str | None, layer_id: str | None) -> str:
     """Pick a sensible colourmap based on the data being plotted."""
     hint = (title or "").lower() + " " + (layer_id or "").lower()
@@ -125,12 +131,27 @@ def plot_choropleth(
     # If stats CSV provided, join it to the boundaries
     if stats_csv_path:
         stats_df = pd.read_csv(stats_csv_path)
-        # Find a matching name column in the GeoDataFrame
+        # Find the best matching name column — prefer the deepest admin level
+        # (name_3 > name_2 > name_1 > name_0) since stats are typically at the
+        # deepest level present in the boundaries file.
         name_col = None
-        for candidate in ["name_1", "name_2", "name_3", "name_0", "name", "NAME"]:
-            if candidate in gdf.columns:
-                name_col = candidate
-                break
+        if "zone" in stats_df.columns:
+            zone_values = set(stats_df["zone"].dropna().str.strip())
+            # Try deepest admin level first for best match
+            for candidate in ["name_3", "name_2", "name_1", "name_0", "name", "NAME"]:
+                if candidate not in gdf.columns:
+                    continue
+                col_values = set(gdf[candidate].dropna().str.strip())
+                overlap = zone_values & col_values
+                if len(overlap) >= max(1, len(zone_values) * 0.5):
+                    name_col = candidate
+                    break
+            # Fallback: first name column with any overlap
+            if name_col is None:
+                for candidate in ["name_2", "name_1", "name_3", "name_0", "name"]:
+                    if candidate in gdf.columns:
+                        name_col = candidate
+                        break
         if name_col and "zone" in stats_df.columns:
             gdf = gdf.merge(stats_df, left_on=name_col, right_on="zone", how="left")
             if data_column is None:
@@ -148,15 +169,65 @@ def plot_choropleth(
     cmap = _guess_colormap(title, layer_id)
     fig, ax = _setup_figure(title)
 
-    gdf.plot(
-        column=data_column,
-        ax=ax,
-        cmap=cmap,
-        legend=True,
-        edgecolor="black",
-        linewidth=0.5,
-        missing_kwds={"color": "lightgrey", "label": "No data"},
-    )
+    # Intelligent scale: choose classification scheme based on data spread
+    valid_data = gdf[data_column].dropna()
+    plot_kwargs: dict[str, Any] = {
+        "column": data_column,
+        "ax": ax,
+        "cmap": cmap,
+        "edgecolor": "black",
+        "linewidth": 0.5,
+        "missing_kwds": {"color": "lightgrey", "label": "No data"},
+    }
+
+    if len(valid_data) >= 5:
+        data_range = float(valid_data.max() - valid_data.min())
+        data_mean = float(valid_data.mean())
+        coeff_of_variation = data_range / data_mean if data_mean > 0 else 0
+
+        if coeff_of_variation < 0.5:
+            # Narrow spread — use quantiles to maximize visual contrast
+            # This is the key fix: when all values are close (e.g., 0.05-0.13),
+            # a linear scale washes everything to one colour.
+            n_classes = min(5, len(valid_data))
+            plot_kwargs["scheme"] = "quantiles"
+            plot_kwargs["k"] = n_classes
+            plot_kwargs["legend"] = True
+            plot_kwargs["legend_kwds"] = {"fontsize": 8, "title": data_column, "fmt": "{:.3f}"}
+        elif _is_prevalence(title, layer_id):
+            # Prevalence data: use epidemiologically meaningful breakpoints
+            # WHO/MAP standard: <1%, 1-5%, 5-10%, 10-25%, 25-50%, >50%
+            import mapclassify  # noqa: F811
+            bins = [b for b in [0.01, 0.05, 0.10, 0.25, 0.50] if valid_data.min() < b < valid_data.max()]
+            if bins:
+                plot_kwargs["scheme"] = "user_defined"
+                plot_kwargs["classification_kwds"] = {"bins": bins}
+                plot_kwargs["legend"] = True
+                plot_kwargs["legend_kwds"] = {"fontsize": 8, "title": "PfPR", "fmt": "{:.3f}"}
+            else:
+                plot_kwargs["scheme"] = "quantiles"
+                plot_kwargs["k"] = min(5, len(valid_data))
+                plot_kwargs["legend"] = True
+                plot_kwargs["legend_kwds"] = {"fontsize": 8, "title": data_column, "fmt": "{:.3f}"}
+        else:
+            # Enough spread for natural breaks
+            plot_kwargs["scheme"] = "natural_breaks"
+            plot_kwargs["k"] = min(5, len(valid_data))
+            plot_kwargs["legend"] = True
+            plot_kwargs["legend_kwds"] = {"fontsize": 8, "title": data_column, "fmt": "{:.3f}"}
+    else:
+        # Too few zones for classification — use continuous scale
+        plot_kwargs["legend"] = True
+
+    try:
+        gdf.plot(**plot_kwargs)
+    except Exception:
+        # Fallback to simple continuous scale if classification fails
+        gdf.plot(
+            column=data_column, ax=ax, cmap=cmap, legend=True,
+            edgecolor="black", linewidth=0.5,
+            missing_kwds={"color": "lightgrey", "label": "No data"},
+        )
 
     plt.tight_layout()
     stem = Path(boundaries_path).stem

@@ -57,6 +57,7 @@ def fetch_raster(
     admin1: str | None = None,
     bbox: list[float] | None = None,
     year: int | None = None,
+    _skip_session: bool = False,
 ) -> dict:
     """Download a raster layer from MAP's WCS service.
 
@@ -73,6 +74,10 @@ def fetch_raster(
     Returns:
         Dict with: tif_path, layer_id, bbox, shape info.
     """
+    # Resolve @L refs in layer_id
+    from map_agent.core.session import session
+    layer_id = session.resolve_if_ref(layer_id)
+
     area_bbox = _bbox_for_area(country, admin1, bbox)
 
     # Check cache
@@ -83,12 +88,23 @@ def fetch_raster(
     }
     cached = get_cached_path("raster", suffix=".tif", **cache_params)
     if cached is not None:
-        return {
+        cached_result = {
             "tif_path": str(cached.resolve()),
             "layer_id": layer_id,
             "bbox": list(area_bbox) if area_bbox else None,
             "cached": True,
         }
+        if not _skip_session:
+            from map_agent.core.analytics import log_tool_call
+            from map_agent.core.validate import validate_raster
+
+            raster_ref = session.register_ref("R", str(cached.resolve()), f"{layer_id} {country or ''}")
+            session.last_raster_path = str(cached.resolve())
+            session.last_layer_id = layer_id
+            cached_result["ref"] = raster_ref
+            cached_result["warnings"] = validate_raster(str(cached.resolve()), expected_bbox=area_bbox)
+            log_tool_call("fetch_raster", country=country, layer_id=layer_id)
+        return cached_result
 
     # Fetch from WCS
     wcs = get_wcs_client()
@@ -104,7 +120,7 @@ def fetch_raster(
         }
 
     kwargs: dict = {
-        "identifier": [layer_id],
+        "identifier": layer_id,
         "format": "image/tiff",
     }
     if area_bbox:
@@ -155,5 +171,20 @@ def fetch_raster(
         da.close()
     except Exception:
         pass
+
+    # Register ref, validate, and log
+    if not _skip_session:
+        from map_agent.core.analytics import log_tool_call
+        from map_agent.core.validate import validate_raster
+
+        raster_ref = session.register_ref("R", str(out_path.resolve()), f"{layer_id} {iso3 or ''}")
+        session.last_raster_path = str(out_path.resolve())
+        session.last_layer_id = layer_id
+        raster_info["ref"] = raster_ref
+
+        raster_warnings = validate_raster(str(out_path.resolve()), expected_bbox=area_bbox)
+        raster_info["warnings"] = raster_warnings
+
+        log_tool_call("fetch_raster", country=iso3, layer_id=layer_id)
 
     return raster_info

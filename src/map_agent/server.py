@@ -14,14 +14,18 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from map_agent.tools import admin, catalog, citations, extract, plot, wcs, wfs
+from map_agent.tools import admin, analyze as analyze_mod, catalog, citations, extract, plot, wcs, wfs
 
 mcp = FastMCP(
     "Malaria Atlas Project",
     instructions=(
         "Research workbench for MAP geoserver data: prevalence, incidence, "
         "mortality, interventions, vectors, blood disorders, and admin boundaries "
-        "across Africa. Supports hierarchical drill-down from country to district."
+        "across Africa. Supports hierarchical drill-down from country to district.\n\n"
+        "DISCLAIMER: This is an independent personal tool, NOT an official product "
+        "of the Malaria Atlas Project (MAP), University of Oxford, or Telethon Kids "
+        "Institute. Data is sourced from MAP's public geoserver under CC BY 3.0. "
+        "All outputs must include the dataset citation provided by get_citation()."
     ),
 )
 
@@ -301,6 +305,98 @@ def get_citation(layer_id: str) -> str:
     """
     result = citations.get_citation(layer_id)
     return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Tool 8: analyze (chain command)
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def analyze(
+    metric: str,
+    country: str,
+    admin_level: int = 1,
+    name_filter: str | None = None,
+    plot_style: Literal["choropleth", "raster"] = "choropleth",
+    stats: list[str] | None = None,
+) -> str:
+    """Run a complete analysis pipeline in ONE call — the chain command.
+
+    Instead of calling 5 tools separately, this single call produces:
+    boundaries + raster + zonal stats + plot + citation.
+
+    Results include @refs (e.g., @R1, @B1, @S1) that you can use in
+    subsequent tool calls instead of file paths.
+
+    Metric shortcuts:
+    - "pfpr" / "prevalence" → Pf Parasite Rate
+    - "incidence" → Pf Incidence Rate
+    - "mortality" → Pf Mortality Rate
+    - "pvpr" → Pv Parasite Rate
+    - "itn" / "itn_use" → ITN Use coverage
+    - "irs" → IRS coverage
+    - "act" → Effective Treatment
+    - "g6pd" → G6PD deficiency allele frequency
+    - "duffy" → Duffy negativity phenotype frequency
+    - "sickle" / "hbs" → Sickle haemoglobin HbS
+    - "hbc" → HbC allele frequency
+    - "gambiae" / "funestus" / "arabiensis" → vector suitability
+    - Or pass a full layer ID (e.g., "Malaria__202508_Global_Pf_Parasite_Rate")
+
+    Examples:
+        analyze("pfpr", "Kenya", 1) → PfPR by county with choropleth
+        analyze("itn", "Tanzania", 2) → ITN coverage by district
+        analyze("g6pd", "Nigeria", 1, plot_style="raster") → G6PD heatmap
+
+    Args:
+        metric: What to analyze — shortcut name or full layer ID.
+        country: Country name or ISO3 code.
+        admin_level: Admin level for breakdown (0-3). Default 1.
+        name_filter: Optional name to filter within the admin level.
+        plot_style: "choropleth" (default) or "raster".
+        stats: Statistics to compute. Defaults to ["mean","min","max","median"].
+
+    Returns:
+        JSON with all artifacts: boundary, raster, stats table, plot, citation,
+        @refs, validation warnings, and follow-up suggestions.
+    """
+    result = analyze_mod.analyze(metric, country, admin_level, name_filter, plot_style, stats)
+
+    # Add suggestions
+    from map_agent.core.analytics import get_suggestions
+    result["suggestions"] = get_suggestions(
+        country=result.get("boundary", {}).get("country") or country,
+        last_layer_id=result.get("layer_id"),
+    )
+
+    return json.dumps(result, indent=2, default=str)
+
+
+# ---------------------------------------------------------------------------
+# Tool 9: session_status
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def session_status() -> str:
+    """Show the current session state: @refs, geographic focus, and breadcrumb.
+
+    Displays all active refs (@L, @R, @B, @S, @P) that can be used in
+    place of layer IDs and file paths in subsequent tool calls.
+
+    Also shows the current geographic focus (country, admin level),
+    drill-down breadcrumb, and follow-up suggestions based on usage history.
+
+    Returns:
+        JSON with: focus, breadcrumb, refs, last_artifacts, usage_summary, suggestions.
+    """
+    from map_agent.core.analytics import get_suggestions, get_usage_summary
+    from map_agent.core.session import session
+
+    status = session.get_status()
+    status["usage_summary"] = get_usage_summary()
+    status["suggestions"] = get_suggestions(
+        country=session.current_iso3,
+        last_layer_id=session.last_layer_id,
+    )
+    return json.dumps(status, indent=2, default=str)
 
 
 def main() -> None:

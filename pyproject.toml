@@ -26,6 +26,7 @@ dependencies = [
   "xarray>=2024.1",
   "geopandas>=0.14",
   "rasterstats>=0.19",
+  "mapclassify>=2.6",
   "matplotlib>=3.8",
   "pydantic>=2.6",
   "pydantic-settings>=2.2",

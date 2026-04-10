@@ -176,7 +176,17 @@ def fetch_points(
     cache_out = cache_path_for("points", suffix=".geojson", **cache_params)
     gdf.to_file(cache_out, driver="GeoJSON")
 
-    return _build_response(gdf, str(out_path.resolve()), layer_id, cached=False)
+    result = _build_response(gdf, str(out_path.resolve()), layer_id, cached=False)
+
+    # Register ref and log
+    from map_agent.core.analytics import log_tool_call
+    from map_agent.core.session import session
+
+    points_ref = session.register_ref("P", str(out_path.resolve()), f"{layer_id} {iso3 or 'global'}")
+    result["ref"] = points_ref
+    log_tool_call("fetch_points", country=iso3, dataset=dataset, layer_id=layer_id)
+
+    return result
 
 
 def _build_response(
@@ -187,9 +197,16 @@ def _build_response(
     non_geom_cols = [c for c in gdf.columns if c != "geometry"]
     sample = gdf[non_geom_cols].head(5).to_dict(orient="records")
 
+    # Flag restricted survey records (some PR data has redistribution limits)
+    restricted_count = 0
+    if "permissions_info" in gdf.columns:
+        restricted_count = int(
+            gdf["permissions_info"].fillna("").str.contains("No permission", case=False).sum()
+        )
+
     # Detect useful columns
     bounds = gdf.total_bounds
-    return {
+    result = {
         "geojson_path": path,
         "layer_id": layer_id,
         "feature_count": len(gdf),
@@ -199,3 +216,13 @@ def _build_response(
         "fetched_at": datetime.now().isoformat(),
         "cached": cached,
     }
+
+    if restricted_count > 0:
+        result["data_restriction_warning"] = (
+            f"{restricted_count}/{len(gdf)} records are flagged "
+            f"'No permission to release data'. These records lack PR values "
+            f"and should not be redistributed individually. Aggregated/modelled "
+            f"outputs derived from the full dataset are permitted under CC BY 3.0."
+        )
+
+    return result

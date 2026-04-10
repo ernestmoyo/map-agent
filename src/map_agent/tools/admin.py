@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import Any
 
 import geopandas as gpd
+import requests
 
 from map_agent.core.cache import get_cached_path, cache_path_for
 from map_agent.core.config import settings
-from map_agent.core.geoserver import get_wfs_client
 
 logger = logging.getLogger(__name__)
 
@@ -83,32 +83,40 @@ def _fetch_admin_gdf(
     if cached is not None:
         return gpd.read_file(cached)
 
-    wfs = get_wfs_client()
     layer = _layer_name(admin_level)
 
-    # Build CQL filter
+    # Build CQL filter — use 'iso' column (not 'iso3') per MAP schema
     cql_parts: list[str] = []
     if iso3:
-        cql_parts.append(f"iso3='{iso3}'")
+        cql_parts.append(f"iso='{iso3}'")
     if name_filter:
-        # Case-insensitive partial match on name fields
         cql_parts.append(
             f"(strToUpperCase(name_0) LIKE '%{name_filter.upper()}%' OR "
             f"strToUpperCase(name_1) LIKE '%{name_filter.upper()}%' OR "
             f"strToUpperCase(name_2) LIKE '%{name_filter.upper()}%')"
         )
 
-    kwargs: dict[str, Any] = {
-        "typename": [layer],
+    # Use direct HTTP request — OWSLib WFS doesn't support GeoServer's
+    # vendor-specific CQL_FILTER parameter in any version.
+    params: dict[str, str] = {
+        "service": "WFS",
+        "version": "1.1.0",
+        "request": "GetFeature",
+        "typeName": layer,
         "outputFormat": "application/json",
-        "maxfeatures": 500,
+        "maxFeatures": "500",
     }
     if cql_parts:
-        kwargs["cql_filter"] = " AND ".join(cql_parts)
+        params["CQL_FILTER"] = " AND ".join(cql_parts)
 
     logger.info("Fetching %s (iso3=%s, name=%s)", layer, iso3, name_filter)
-    response = wfs.getfeature(**kwargs)
-    data = response.read()
+    response = requests.get(
+        f"{settings.geoserver_root}/wfs",
+        params=params,
+        timeout=settings.request_timeout,
+    )
+    response.raise_for_status()
+    data = response.content
 
     gdf = gpd.read_file(BytesIO(data))
     if gdf.empty:
@@ -200,8 +208,26 @@ def get_boundaries(
         except Exception as exc:
             logger.warning("Could not fetch admin%d sub-units: %s", next_level, exc)
 
+    # Register ref and update session
+    from map_agent.core.analytics import log_tool_call
+    from map_agent.core.session import session
+    from map_agent.core.validate import validate_boundaries
+
+    path_str = str(out_path.resolve())
+    label = f"{iso3} admin{admin_level}"
+    if name_filter:
+        label += f" ({name_filter})"
+    boundary_ref = session.register_ref("B", path_str, label)
+    session.last_boundary_path = path_str
+    session.set_focus(iso3=iso3, admin_level=admin_level, bbox=bbox, name_filter=name_filter)
+
+    bnd_warnings = validate_boundaries(path_str)
+
+    log_tool_call("get_boundaries", country=iso3, admin_level=admin_level)
+
     return {
-        "geojson_path": str(out_path.resolve()),
+        "ref": boundary_ref,
+        "geojson_path": path_str,
         "country": iso3,
         "admin_level": admin_level,
         "feature_count": len(gdf),
@@ -215,4 +241,5 @@ def get_boundaries(
             if sub_units
             else "This is the deepest admin level available for this area."
         ),
+        "warnings": bnd_warnings,
     }
